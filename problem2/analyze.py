@@ -1,0 +1,286 @@
+"""
+Extrapolation analysis for different positional encoding strategies.
+"""
+
+import torch
+import torch.nn as nn
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from pathlib import Path
+import json
+import argparse
+from tqdm import tqdm
+
+from model import create_model
+from dataset import create_extrapolation_loader, create_dataloaders
+from positional_encoding import visualize_positional_encoding
+
+
+def evaluate_extrapolation(model, data_dir, test_lengths, device, batch_size=32):
+    """
+    Evaluate model on sequences of different lengths.
+
+    Args:
+        model: Trained model
+        data_dir: Data directory
+        test_lengths: List of sequence lengths to test
+        device: Device to run on
+        batch_size: Batch size
+
+    Returns:
+        Dictionary mapping length to accuracy
+    """
+    model.eval()
+    results = {}
+
+    for length in test_lengths:
+        print(f"Testing on length {length}...")
+
+        # Load data for this length
+        dataloader = create_extrapolation_loader(
+            data_dir, length, batch_size
+        )
+
+        correct = 0
+        total = 0
+
+        with torch.no_grad():
+            for batch in tqdm(dataloader, desc=f"Length {length}"):
+                sequences = batch['sequence'].to(device)
+                labels = batch['label'].to(device)
+                masks = batch['mask'].to(device)
+
+                # TODO: Get predictions
+                logits = model(sequences, torch.tensor([length] * sequences.size(0)).to(device))
+                preds = logits.argmax(dim=1)
+
+                # TODO: Count correct predictions
+                correct += (preds == labels).sum().item()
+                total += labels.size(0)
+
+        accuracy = correct / total
+        results[length] = accuracy
+        print(f"  Accuracy: {accuracy:.2%}")
+
+    return results
+
+
+def plot_extrapolation_curves(all_results, save_path):
+    """
+    Plot extrapolation curves for all encoding types.
+
+    Args:
+        all_results: Dictionary mapping encoding type to results
+        save_path: Path to save figure
+    """
+    plt.figure(figsize=(10, 6))
+
+    # Define colors and markers for each encoding type
+    styles = {
+        'sinusoidal': {'color': 'blue', 'marker': 'o', 'linestyle': '-'},
+        'learned': {'color': 'red', 'marker': 's', 'linestyle': '--'},
+        'none': {'color': 'gray', 'marker': '^', 'linestyle': ':'}
+    }
+
+    for encoding_type, results in all_results.items():
+        lengths = sorted(results.keys())
+        accuracies = [results[l] for l in lengths]
+
+        style = styles[encoding_type]
+        plt.plot(lengths, accuracies,
+                label=encoding_type.capitalize(),
+                color=style['color'],
+                marker=style['marker'],
+                linestyle=style['linestyle'],
+                markersize=8,
+                linewidth=2)
+
+    # Add training range indicator
+    plt.axvspan(8, 16, alpha=0.2, color='green', label='Training Range')
+
+    plt.xlabel('Sequence Length', fontsize=12)
+    plt.ylabel('Accuracy', fontsize=12)
+    plt.title('Length Extrapolation Performance', fontsize=14)
+    plt.legend(loc='best', fontsize=10)
+    plt.grid(True, alpha=0.3)
+    plt.xlim(0, 270)
+    plt.ylim(0, 1.05)
+
+    # Add percentage labels
+    plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.show()
+    print(f"Saved extrapolation curves to {save_path}")
+
+
+def visualize_learned_positions(model_path, output_dir, max_positions=128):
+    """
+    Visualize learned positional embeddings.
+
+    Args:
+        model_path: Path to trained model with learned encoding
+        output_dir: Directory to save visualizations
+        max_positions: Number of positions to visualize
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load model
+    model = create_model(encoding_type='learned', max_len=4096)
+    model.load_state_dict(torch.load(model_path, map_location='cpu'))
+
+    # Extract learned positional embeddings
+    pos_encoding = model.pos_encoding
+
+    # TODO: Extract embedding weights
+    embeddings = pos_encoding.position_embeddings.weight[:max_positions].detach().cpu().numpy()
+
+    # Visualize embeddings as heatmap
+    plt.figure(figsize=(12, 8))
+
+    # TODO: Create heatmap of position embeddings
+    sns.heatmap(embeddings, cmap='coolwarm', cbar=True)
+    plt.title(f"Learned Positional Embeddings (first {max_positions} positions)")
+    plt.xlabel("Embedding Dimension")
+    plt.ylabel("Position Index")
+
+    save_path = output_dir / 'learned_position_embeddings.png'
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.show()
+    print(f"Saved position embeddings visualization to {save_path}")
+
+
+def compare_position_encodings(output_dir, d_model=128, max_len=128):
+    """
+    Compare different positional encoding strategies visually.
+
+    Args:
+        output_dir: Directory to save visualizations
+        d_model: Model dimension
+        max_len: Maximum sequence length to visualize
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    from positional_encoding import (
+        SinusoidalPositionalEncoding,
+        LearnedPositionalEncoding,
+        NoPositionalEncoding
+    )
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+    # Sinusoidal encoding
+    sinusoidal = SinusoidalPositionalEncoding(d_model, max_len)
+    sin_encoding = visualize_positional_encoding(sinusoidal, max_len, d_model)
+
+    im1 = axes[0].imshow(sin_encoding[:50, :50], cmap='RdBu_r', aspect='auto')
+    axes[0].set_title('Sinusoidal Encoding')
+    axes[0].set_xlabel('Dimension')
+    axes[0].set_ylabel('Position')
+    plt.colorbar(im1, ax=axes[0])
+
+    # Learned encoding (random initialization)
+    learned = LearnedPositionalEncoding(d_model, max_len)
+    learned_encoding = visualize_positional_encoding(learned, max_len, d_model)
+
+    im2 = axes[1].imshow(learned_encoding[:50, :50], cmap='RdBu_r', aspect='auto')
+    axes[1].set_title('Learned Encoding (Init)')
+    axes[1].set_xlabel('Dimension')
+    axes[1].set_ylabel('Position')
+    plt.colorbar(im2, ax=axes[1])
+
+    # No encoding
+    no_encoding = NoPositionalEncoding(d_model, max_len)
+    none_encoding = visualize_positional_encoding(no_encoding, max_len, d_model)
+
+    im3 = axes[2].imshow(none_encoding[:50, :50], cmap='RdBu_r', aspect='auto')
+    axes[2].set_title('No Encoding')
+    axes[2].set_xlabel('Dimension')
+    axes[2].set_ylabel('Position')
+    plt.colorbar(im3, ax=axes[2])
+
+    plt.suptitle('Positional Encoding Comparison', fontsize=14)
+    plt.tight_layout()
+
+    save_path = output_dir / 'encoding_comparison.png'
+    plt.savefig(save_path, dpi=150)
+    plt.show()
+    print(f"Saved encoding comparison to {save_path}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Analyze extrapolation performance')
+    parser.add_argument('--data-dir', default='data', help='Data directory')
+    parser.add_argument('--results-dir', default='results', help='Results directory')
+    parser.add_argument('--output-dir', default='results/extrapolation',
+                        help='Output directory for analysis')
+    parser.add_argument('--batch-size', type=int, default=32, help='Batch size')
+    parser.add_argument('--test-lengths', type=int, nargs='+',
+                        default=[32, 64, 128, 256],
+                        help='Sequence lengths to test')
+    parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
+
+    args = parser.parse_args()
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Test all three encoding types
+    encoding_types = ['sinusoidal', 'learned', 'none']
+    all_results = {}
+
+    for encoding_type in encoding_types:
+        print(f"\n{'='*50}")
+        print(f"Testing {encoding_type} encoding")
+        print(f"{'='*50}")
+
+        model_path = Path(args.results_dir) / encoding_type / 'best_model.pth'
+
+        if not model_path.exists():
+            print(f"Model not found at {model_path}, skipping...")
+            continue
+
+        # Load model
+        model = create_model(encoding_type=encoding_type, max_len=4096).to(args.device)
+        model.load_state_dict(torch.load(model_path))
+
+        # Evaluate extrapolation
+        results = evaluate_extrapolation(
+            model, args.data_dir, args.test_lengths, args.device, args.batch_size
+        )
+
+        all_results[encoding_type] = results
+
+    # Save numerical results
+    with open(output_dir / 'extrapolation_results.json', 'w') as f:
+        json.dump(all_results, f, indent=2)
+
+    # Plot extrapolation curves
+    plot_extrapolation_curves(
+        all_results,
+        output_dir / 'extrapolation_curves.png'
+    )
+
+    # Visualize learned positions if available
+    learned_model_path = Path(args.results_dir) / 'learned' / 'best_model.pth'
+    if learned_model_path.exists():
+        visualize_learned_positions(
+            learned_model_path,
+            output_dir / 'position_viz'
+        )
+
+    # Compare encoding strategies
+    compare_position_encodings(output_dir / 'encoding_comparison')
+
+    print(f"\nAnalysis complete! Results saved to {output_dir}")
+
+
+if __name__ == '__main__':
+    main()
+
+
